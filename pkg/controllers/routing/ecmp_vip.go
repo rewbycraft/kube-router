@@ -15,30 +15,54 @@ import (
 
 // bgpAdvertiseVIP advertises the service vip (cluster ip or load balancer ip or external IP) the configured peers
 func (nrc *NetworkRoutingController) bgpAdvertiseVIP(vip string) error {
+	pfxlen := 32
 
-	attrs := []bgp.PathAttributeInterface{
-		bgp.NewPathAttributeOrigin(0),
-		bgp.NewPathAttributeNextHop(nrc.nodeIP.String()),
+	if nrc.isIpv6 {
+		pfxlen = 128
 	}
 
-	glog.V(2).Infof("Advertising route: '%s/%s via %s' to peers", vip, strconv.Itoa(32), nrc.nodeIP.String())
+	glog.V(2).Infof("Advertising route: '%s/%s via %s' to peers", vip, strconv.Itoa(pfxlen), nrc.nodeIP.String())
 
-	_, err := nrc.bgpServer.AddPath("", []*table.Path{table.NewPath(nil, bgp.NewIPAddrPrefix(uint8(32),
-		vip), false, attrs, time.Now(), false)})
-
-	return err
+	if !nrc.isIpv6 {
+		attrs := []bgp.PathAttributeInterface{
+			bgp.NewPathAttributeOrigin(0),
+			bgp.NewPathAttributeNextHop(nrc.nodeIP.String()),
+		}
+		_, err := nrc.bgpServer.AddPath("", []*table.Path{table.NewPath(nil, bgp.NewIPAddrPrefix(uint8(pfxlen), vip), false, attrs, time.Now(), false)})
+		return err
+	} else {
+		prefixes := []bgp.AddrPrefixInterface{bgp.NewIPv6AddrPrefix(uint8(pfxlen), vip)}
+		attrs := []bgp.PathAttributeInterface{
+			bgp.NewPathAttributeOrigin(bgp.BGP_ORIGIN_ATTR_TYPE_IGP),
+			// This requires some research.
+			// For ipv6 what should be next-hop value? According to	 this https://www.noction.com/blog/bgp-next-hop
+			// using the link-local	 address may be more appropriate.
+			bgp.NewPathAttributeMpReachNLRI(nrc.nodeIP.String(), prefixes),
+		}
+		_, err := nrc.bgpServer.AddPath("", []*table.Path{table.NewPath(nil, bgp.NewIPv6AddrPrefix(uint8(pfxlen), vip), false, attrs, time.Now(), false)})
+		return err
+	}
 }
 
 // bgpWithdrawVIP  unadvertises the service vip
 func (nrc *NetworkRoutingController) bgpWithdrawVIP(vip string) error {
-	glog.V(2).Infof("Withdrawing route: '%s/%s via %s' to peers", vip, strconv.Itoa(32), nrc.nodeIP.String())
+	pfxlen := 32
 
-	pathList := []*table.Path{table.NewPath(nil, bgp.NewIPAddrPrefix(uint8(32),
-		vip), true, nil, time.Now(), false)}
+	if nrc.isIpv6 {
+		pfxlen = 128
+	}
 
-	err := nrc.bgpServer.DeletePath([]byte(nil), 0, "", pathList)
+	glog.V(2).Infof("Withdrawing route: '%s/%s via %s' to peers", vip, strconv.Itoa(pfxlen), nrc.nodeIP.String())
 
-	return err
+	if !nrc.isIpv6 {
+		pathList := []*table.Path{table.NewPath(nil, bgp.NewIPAddrPrefix(uint8(pfxlen), vip), true, nil, time.Now(), false)}
+		err := nrc.bgpServer.DeletePath([]byte(nil), 0, "", pathList)
+		return err
+	} else {
+		pathList := []*table.Path{table.NewPath(nil, bgp.NewIPv6AddrPrefix(uint8(pfxlen), vip), true, nil, time.Now(), false)}
+		err := nrc.bgpServer.DeletePath([]byte(nil), 0, "", pathList)
+		return err
+	}
 }
 
 func (nrc *NetworkRoutingController) advertiseVIPs(vips []string) {
